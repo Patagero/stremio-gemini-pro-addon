@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: stremio-gemini-pro-addon
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 7004
+      - key: GEMINI_MODEL
+        value: gemini-3.7-pro
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: TMDB_API_KEY
+        sync: false
+      - key: OPENSUBTITLES_API_KEY
+        sync: false
+      - key: TARGET_CPS
+        value: 17
+      - key: MAX_LINE_CHARS
+        value: 42
