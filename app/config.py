@@ -7,7 +7,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 # Port & Server
-PORT = int(os.environ.get("PORT", "7004"))
+PORT = int(os.environ.get("PORT", "10000"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
