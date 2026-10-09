@@ -193,6 +193,16 @@ async def configure():
     return Response(content=html, media_type="text/html")
 
 
+def get_public_root(request: Request) -> str:
+    if config.PUBLIC_BASE_URL:
+        return config.PUBLIC_BASE_URL.rstrip("/")
+    
+    # Auto-resolve from reverse proxy headers (Render, Cloudflare, etc.)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or f"{request.url.hostname}:{request.url.port}"
+    proto = request.headers.get("x-forwarded-proto") or ("https" if "onrender.com" in host or "herokuapp.com" in host else request.url.scheme)
+    return f"{proto}://{host}"
+
+
 @app.get("/subtitles/{media_type}/{imdb_id}")
 @app.get("/subtitles/{media_type}/{imdb_id}.json")
 @app.get("/subtitles/{media_type}/{imdb_id}/{extra:path}")
@@ -203,7 +213,8 @@ async def get_subtitles_route(
     extra: str = ""
 ):
     clean_id = imdb_id.replace(".json", "")
-    root = config.PUBLIC_BASE_URL or f"{request.url.scheme}://{request.url.netloc}"
+    root = get_public_root(request)
+    logger.info(f"[{clean_id}] Subtitles requested. Returning subtitle url: {root}/subtitle-file/{clean_id}/auto.srt")
 
     # Single clean auto-detected Slovenian track
     subtitles = [
