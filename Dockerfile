@@ -18,6 +18,6 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV PORT=7004
 
-EXPOSE 7004
+EXPOSE 7004 10000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7004"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7004}"]

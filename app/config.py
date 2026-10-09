@@ -27,8 +27,8 @@ GEMINI_FALLBACK_MODELS = [
 TARGET_CPS = int(os.environ.get("TARGET_CPS", "17"))
 MAX_LINE_CHARS = int(os.environ.get("MAX_LINE_CHARS", "42"))
 MAX_LINES = 2
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "35"))
-TRANSLATION_CONCURRENCY = int(os.environ.get("TRANSLATION_CONCURRENCY", "2"))
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "50"))
+TRANSLATION_CONCURRENCY = int(os.environ.get("TRANSLATION_CONCURRENCY", "4"))
 
 # Source Language Priority (1. Italian -> 2. English)
 SOURCE_LANGUAGE_PRIORITY = ["it", "en"]

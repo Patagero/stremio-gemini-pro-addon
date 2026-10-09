@@ -84,11 +84,16 @@ def get_notice_message(source_lang: str) -> str:
     return f"Prevod iz {source_lang.upper()} podnapisov (Gemini 3.7 Pro)."
 
 
-async def perform_translation_pipeline(imdb_id: str, lang: str, media_type: str = "movie") -> str:
+async def perform_translation_pipeline(imdb_id: str, lang: str = "auto", media_type: str = "movie") -> str:
     cache_key = f"{imdb_id}:{lang}"
 
     # 1. Check disk / memory cache
     cached = memory_cache.get(cache_key) or get_cached_disk_srt(imdb_id, lang)
+    if not cached and lang == "auto":
+        # Also check if it was cached under specific language
+        cached = memory_cache.get(f"{imdb_id}:it") or get_cached_disk_srt(imdb_id, "it") or \
+                 memory_cache.get(f"{imdb_id}:en") or get_cached_disk_srt(imdb_id, "en") or \
+                 memory_cache.get(f"{imdb_id}:sl") or get_cached_disk_srt(imdb_id, "sl")
     if cached:
         notice = "Naloženi že prej prevedeni slovenski podnapisi."
         logger.info(f"[{imdb_id}] Serving from cache with notice")
@@ -96,10 +101,11 @@ async def perform_translation_pipeline(imdb_id: str, lang: str, media_type: str 
 
     logger.info(f"[{imdb_id}] Starting translation pipeline (source preference: {lang.upper()})")
 
-    # 2. Fetch source subtitle
-    source_data = await fetch_source_subtitle(imdb_id, preferred_lang=lang, media_type=media_type)
+    # 2. Fetch source subtitle (Auto checks: Native Slovene -> Italian -> English)
+    pref_lang = None if lang == "auto" else lang
+    source_data = await fetch_source_subtitle(imdb_id, preferred_lang=pref_lang, media_type=media_type)
     raw_srt = source_data.get("srt", "")
-    used_lang = source_data.get("language", lang)
+    used_lang = source_data.get("language", "en")
     is_native = source_data.get("isNativeSlovene", False)
 
     if not raw_srt.strip():
@@ -118,13 +124,14 @@ async def perform_translation_pipeline(imdb_id: str, lang: str, media_type: str 
         final_srt = prepend_notice_cue(cleaned_srt, notice)
         memory_cache[cache_key] = cleaned_srt
         save_cached_disk_srt(imdb_id, lang, cleaned_srt)
+        save_cached_disk_srt(imdb_id, "auto", cleaned_srt)
         return final_srt
 
     # 4. Fetch IMDb / Cinemeta / TMDB Metadata
     meta = await get_metadata(imdb_id, media_type)
     logger.info(f"[{imdb_id}] Metadata loaded: {meta.title} | Genres: {meta.genre_string}")
 
-    # 5. Gemini 3.7 Pro Translation
+    # 5. Gemini 3.7 Translation
     translator = GeminiProTranslator()
     translated_map = await translator.translate_all(source_cues, meta)
 
@@ -135,10 +142,7 @@ async def perform_translation_pipeline(imdb_id: str, lang: str, media_type: str 
     # 7. Persist to cache
     memory_cache[cache_key] = final_translated_srt
     save_cached_disk_srt(imdb_id, lang, final_translated_srt)
-
-    # Also save under generic key
-    generic_key = f"{imdb_id}:{used_lang}"
-    memory_cache[generic_key] = final_translated_srt
+    save_cached_disk_srt(imdb_id, "auto", final_translated_srt)
     save_cached_disk_srt(imdb_id, used_lang, final_translated_srt)
 
     notice = get_notice_message(used_lang)
@@ -201,18 +205,13 @@ async def get_subtitles_route(
     clean_id = imdb_id.replace(".json", "")
     root = config.PUBLIC_BASE_URL or f"{request.url.scheme}://{request.url.netloc}"
 
+    # Single clean auto-detected Slovenian track
     subtitles = [
         {
-            "id": f"gemini-pro-{media_type}-{clean_id}-it",
-            "url": f"{root}/subtitle-file/{clean_id}/it.srt",
+            "id": f"gemini-pro-{media_type}-{clean_id}",
+            "url": f"{root}/subtitle-file/{clean_id}/auto.srt",
             "lang": "slv",
-            "label": "Prevod iz IT (Gemini 3.7 Pro)"
-        },
-        {
-            "id": f"gemini-pro-{media_type}-{clean_id}-en",
-            "url": f"{root}/subtitle-file/{clean_id}/en.srt",
-            "lang": "slv",
-            "label": "Prevod iz ANG (Gemini 3.7 Pro)"
+            "label": "Slovenski AI prevod (Gemini 3.7)"
         }
     ]
 
@@ -220,28 +219,42 @@ async def get_subtitles_route(
 
 
 @app.get("/subtitle-file/{imdb_id}/{lang}.srt")
-async def serve_subtitle_file(imdb_id: str, lang: str, request: Request):
-    clean_id = imdb_id.replace(".json", "")
-    if lang not in config.SUPPORTED_SOURCE_LANGUAGES:
-        lang = "it"
-
+@app.get("/subtitle-file/{imdb_id}.srt")
+async def serve_subtitle_file(imdb_id: str, lang: str = "auto", request: Request = None):
+    clean_id = imdb_id.replace(".json", "").replace(".sl", "")
     cache_key = f"{clean_id}:{lang}"
 
-    # 1. Check if already translated
-    cached = memory_cache.get(cache_key) or get_cached_disk_srt(clean_id, lang)
+    # 1. Check if already translated and available in cache
+    cached = memory_cache.get(cache_key) or get_cached_disk_srt(clean_id, lang) or \
+             memory_cache.get(f"{clean_id}:auto") or get_cached_disk_srt(clean_id, "auto")
     if cached:
         notice = "Naloženi že prej prevedeni slovenski podnapisi."
         srt_content = prepend_notice_cue(cached, notice)
         return PlainTextResponse(srt_content, media_type="application/x-subrip; charset=utf-8")
 
-    # 2. Start / await translation
+    # 2. Deduplicate inflight tasks
+    if clean_id not in active_jobs or active_jobs[clean_id].done():
+        active_jobs[clean_id] = asyncio.create_task(perform_translation_pipeline(clean_id, lang))
+
+    task = active_jobs[clean_id]
+
+    # 3. Wait up to 10 seconds for translation
     try:
-        # Run translation directly (or with timeout wait)
-        srt_result = await perform_translation_pipeline(clean_id, lang)
-        return PlainTextResponse(srt_result, media_type="application/x-subrip; charset=utf-8")
+        done, _ = await asyncio.wait([task], timeout=10.0)
+        if task in done:
+            srt_result = task.result()
+            return PlainTextResponse(srt_result, media_type="application/x-subrip; charset=utf-8")
+        else:
+            # Translation still in progress — return immediate friendly notice cue
+            logger.info(f"[{clean_id}] Translation taking longer than 10s, returning in-progress cue")
+            progress_cue = (
+                "0\n00:00:01,000 --> 00:00:08,000\n"
+                "[Slo AI: Prevajam celoten film v ozadju... Osveži podnapise čez nekaj sekund]\n"
+            )
+            return PlainTextResponse(progress_cue, media_type="application/x-subrip; charset=utf-8")
     except Exception as e:
-        logger.error(f"[{clean_id}] Translation failed: {e}")
-        error_cue = f"1\n00:00:01,000 --> 00:00:06,000\n[Napaka pri prevodu: {str(e)[:150]}]\n"
+        logger.error(f"[{clean_id}] Translation error: {e}")
+        error_cue = f"0\n00:00:01,000 --> 00:00:06,000\n[Napaka: {str(e)[:150]}]\n"
         return PlainTextResponse(error_cue, media_type="application/x-subrip; charset=utf-8", status_code=503)
 
 
